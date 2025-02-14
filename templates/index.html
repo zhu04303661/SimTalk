@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Modelica代码生成器</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/codemirror.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/theme/monokai.min.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/codemirror.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/modelica/modelica.min.js"></script>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <h1 class="text-3xl font-bold text-center mb-8">Modelica代码生成器</h1>
+        
+        {% if not openmodelica_available %}
+        <div class="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-4 mb-8" role="alert">
+            <p class="font-bold">注意：受限模式</p>
+            <p>OpenModelica未安装或配置不正确。应用程序将只能生成代码，不能执行仿真。</p>
+            <p class="mt-2">
+                <a href="https://openmodelica.org/download/download-mac" class="text-blue-600 hover:text-blue-800 underline" target="_blank">
+                    点击这里下载并安装OpenModelica
+                </a>
+            </p>
+        </div>
+        {% endif %}
+        
+        <div class="grid grid-cols-1 gap-6">
+            <!-- 输入部分 -->
+            <div class="bg-white rounded-lg shadow-lg p-6">
+                <h2 class="text-xl font-semibold mb-4">自然语言描述</h2>
+                <textarea id="prompt" class="w-full h-40 p-4 border rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-blue-500" 
+                    placeholder="请输入您想要实现的仿真模型描述...例如：'创建一个简单的弹簧质量阻尼系统，质量为1kg，弹簧刚度为100 N/m，阻尼系数为10 N.s/m'"></textarea>
+                <button id="generate" class="mt-4 bg-blue-500 text-white px-6 py-2 rounded-lg hover:bg-blue-600 transition-colors">
+                    {% if openmodelica_available %}
+                    生成代码并仿真
+                    {% else %}
+                    生成代码
+                    {% endif %}
+                </button>
+            </div>
+
+            <!-- 输出部分 -->
+            <div class="bg-white rounded-lg shadow-lg p-6">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-semibold">生成的Modelica代码</h2>
+                    <button id="copy-code" class="text-blue-500 hover:text-blue-600 px-4 py-1 rounded border border-blue-500 hover:border-blue-600 text-sm">
+                        复制代码
+                    </button>
+                </div>
+                <textarea id="modelica-code" class="w-full h-96"></textarea>
+            </div>
+
+            <!-- 仿真结果 -->
+            {% if openmodelica_available %}
+            <div class="bg-white rounded-lg shadow-lg p-6">
+                <h2 class="text-xl font-semibold mb-4">仿真结果</h2>
+                <div id="status" class="mb-4 p-4 bg-gray-50 rounded-lg text-gray-600">
+                    等待生成代码和仿真...
+                </div>
+                <div id="simulation-details" class="hidden">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div class="p-4 bg-gray-50 rounded-lg">
+                            <h3 class="font-semibold mb-2">仿真设置</h3>
+                            <div id="simulation-setup" class="text-sm"></div>
+                        </div>
+                        <div class="p-4 bg-gray-50 rounded-lg">
+                            <h3 class="font-semibold mb-2">仿真信息</h3>
+                            <div id="simulation-info" class="text-sm"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% else %}
+            <div id="status" class="bg-gray-50 p-4 rounded-lg text-gray-600">
+                仿真功能未启用
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <script>
+        // 初始化CodeMirror编辑器
+        var modelicaEditor = CodeMirror.fromTextArea(document.getElementById("modelica-code"), {
+            mode: "modelica",
+            theme: "monokai",
+            lineNumbers: true,
+            readOnly: true,
+            viewportMargin: Infinity,
+            lineWrapping: true
+        });
+
+        // 复制代码按钮功能
+        document.getElementById('copy-code').addEventListener('click', () => {
+            const code = modelicaEditor.getValue();
+            navigator.clipboard.writeText(code).then(() => {
+                const button = document.getElementById('copy-code');
+                button.textContent = '已复制！';
+                setTimeout(() => {
+                    button.textContent = '复制代码';
+                }, 2000);
+            });
+        });
+
+        // 格式化仿真设置显示
+        function formatSimulationSetup(setup) {
+            if (!setup) return '';
+            return Object.entries(setup).map(([key, value]) => {
+                return `<div class="mb-1">
+                    <span class="font-medium">${key}:</span> ${value}
+                </div>`;
+            }).join('');
+        }
+
+        // 格式化仿真信息显示
+        function formatSimulationInfo(info) {
+            if (!info) return '';
+            const relevantInfo = {
+                '仿真时间': info.timeTotal + ' 秒',
+                '求解器': info.solver,
+                '结果文件': info.resultFile,
+            };
+            return Object.entries(relevantInfo).map(([key, value]) => {
+                return `<div class="mb-1">
+                    <span class="font-medium">${key}:</span> ${value}
+                </div>`;
+            }).join('');
+        }
+
+        document.getElementById('generate').addEventListener('click', async () => {
+            const prompt = document.getElementById('prompt').value;
+            const button = document.getElementById('generate');
+            const statusDiv = document.getElementById('status');
+            const simulationDetails = document.getElementById('simulation-details');
+
+            try {
+                button.disabled = true;
+                button.textContent = '生成中...';
+                if (statusDiv) {
+                    statusDiv.innerHTML = '<p class="text-blue-500">正在生成代码，请稍候...</p>';
+                }
+                if (simulationDetails) {
+                    simulationDetails.classList.add('hidden');
+                }
+
+                const response = await fetch('/api/generate', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ prompt })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    modelicaEditor.setValue(data.modelica_code);
+                    
+                    // 显示结果
+                    if (statusDiv) {
+                        statusDiv.innerHTML = `
+                            <p class="text-green-500">✓ 代码生成成功</p>
+                            <p class="mt-2">模型名称：${data.model_name}</p>
+                            <p class="mt-2">${data.simulation_result.status}</p>
+                        `;
+                    }
+                    
+                    // 显示详细信息
+                    if (simulationDetails && data.simulation_result.setup) {
+                        document.getElementById('simulation-setup').innerHTML = formatSimulationSetup(data.simulation_result.setup);
+                        document.getElementById('simulation-info').innerHTML = formatSimulationInfo(data.simulation_result.info);
+                        simulationDetails.classList.remove('hidden');
+                    }
+                } else {
+                    throw new Error(data.error || '生成失败');
+                }
+            } catch (error) {
+                if (statusDiv) {
+                    statusDiv.innerHTML = `<p class="text-red-500">错误: ${error.message}</p>`;
+                }
+                if (simulationDetails) {
+                    simulationDetails.classList.add('hidden');
+                }
+            } finally {
+                button.disabled = false;
+                button.textContent = document.querySelector('#generate').textContent;
+            }
+        });
+    </script>
+</body>
+</html> 
