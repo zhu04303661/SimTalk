@@ -2,6 +2,9 @@
 
 这是一个基于Azure OpenAI GPT-4的Modelica代码生成器，可以通过自然语言描述生成Modelica仿真代码并执行仿真。
 
+![Uploading 截屏2025-02-17 14.07.31.png…]()
+
+
 ## 功能特点
 
 - 通过自然语言描述生成Modelica代码
