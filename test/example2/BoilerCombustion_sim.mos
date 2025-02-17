@@ -1,0 +1,6 @@
+loadModel(Modelica);
+
+loadFile("BoilerCombustion.mo");
+simulate(BoilerCombustion, stopTime=10.0, numberOfIntervals=500);
+getErrorString();
+

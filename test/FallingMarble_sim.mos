@@ -1,0 +1,16 @@
+// Load the Modelica file
+loadFile("FallingMarble.mo");
+
+// Set the working directory to a new 'tmp' folder
+system("mkdir -p tmp");
+cd("tmp");
+
+// Simulate the FallingMarble model and store results in the 'tmp' folder
+simulate(FallingMarble, stopTime=10.0, numberOfIntervals=500, outputPath="../tmp");
+
+// Print error string (if any)
+getErrorString();
+
+// Plot the height and velocity to check results
+plot(FallingMarble.h);
+plot(FallingMarble.v);

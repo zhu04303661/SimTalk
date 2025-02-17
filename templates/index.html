@@ -541,12 +541,19 @@
                         </div>
                     </div>
                     <div id="simulationResult" class="simulation-result-content">
-                        <!-- 仿真结果将在这里动态更新 -->
+                        <!-- 添加图表容器 -->
+                        <div class="simulation-results">
+                            <div id="heightChart" style="width: 100%; height: 400px;"></div>
+                            <div id="velocityChart" style="width: 100%; height: 400px;"></div>
+                        </div>
                     </div>
                 </div>
             </div>
         </div>
     </div>
+
+    <!-- 引入 ECharts -->
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
 
     <script>
         let monacoEditor;
@@ -622,9 +629,8 @@
                     const textDiv = document.createElement('div');
                     textDiv.className = 'message-text';
                     
-                    // 使用marked.js处理Markdown
-                    const markedContent = marked.parse(textContent);
-                    textDiv.innerHTML = DOMPurify.sanitize(markedContent);
+                    // 直接显示所有内容
+                    textDiv.innerHTML = `<pre style="padding: 12px; overflow: auto; white-space: pre-wrap; font-family: 'Monaco', 'Consolas', monospace;">${textContent}</pre>`;
                     messageDiv.appendChild(textDiv);
                 }
             }
@@ -686,7 +692,7 @@
                     for (const line of lines) {
                         if (!line.trim()) continue;
                         
-                        if (line.startsWith('```modelica:')) {
+                        if (line.startsWith('```modelica') && !line.includes('```modelica:')) {
                             isCollectingCode = true;
                             continue;
                         }
@@ -701,16 +707,8 @@
                         
                         if (isCollectingCode) {
                             codeContent += line + '\n';
-                        } else if (line.startsWith('simulation_result:')) {
-                            try {
-                                const resultJson = line.substring('simulation_result:'.length);
-                                const result = JSON.parse(resultJson);
-                                updateSimulationResult(result);
-                            } catch (e) {
-                                console.error('解析仿真结果失败:', e);
-                            }
                         } else {
-                            // 处理普通文本
+                            // 所有非代码内容直接显示
                             currentParagraph.textContent += line + ' ';
                             if (line.endsWith('.') || line.endsWith('!') || line.endsWith('?')) {
                                 currentParagraph = document.createElement('p');
@@ -752,6 +750,14 @@
                 return;
             }
 
+            // 更新编辑器内容并更新 currentModelName
+            updateEditor(code);
+
+            if (!currentModelName) {
+                alert('无法从代码中识别模型名称');
+                return;
+            }
+
             // 显示运行状态
             showSimulationRunning();
 
@@ -779,38 +785,17 @@
                     if (done) break;
                     
                     const text = decoder.decode(value);
-                    const lines = text.split('\n');
-                    
-                    for (const line of lines) {
-                        if (!line.trim()) continue;
-                        
-                        if (line.startsWith('simulation_result:')) {
-                            try {
-                                const resultJson = line.substring('simulation_result:'.length);
-                                const result = JSON.parse(resultJson);
-                                updateSimulationResult(result);
-                            } catch (e) {
-                                console.error('解析仿真结果失败:', e);
-                                updateSimulationResult({
-                                    status: '仿真失败',
-                                    error: e.message
-                                });
-                            }
-                        } else if (!line.startsWith('正在执行仿真...') && !line.startsWith('仿真已完成！')) {
-                            // 更新状态文本，但排除进度提示
-                            updateSimulationResult({
-                                status: '仿真进行中',
-                                info: line
-                            });
-                        }
-                    }
+                    const objString = JSON.stringify(text, null, 2); 
+                    updateSimulationResult(objString);
                 }
             } catch (error) {
                 console.error('Simulation failed:', error);
-                updateSimulationResult({
+                // 显示错误信息
+                const errorResult = {
                     status: '仿真失败',
                     error: error.message
-                });
+                };
+                updateSimulationResult(errorResult);
             }
         }
 
@@ -947,141 +932,144 @@
 
         function formatSimulationResult(result) {
             const container = document.createElement('div');
+
+            // 状态指示器
+            const statusIndicator = document.createElement('div');
+            statusIndicator.className = 'status-indicator';
             
-            // 处理JSON格式的结果
-            if (typeof result === 'object' && result.status) {
-                // 创建状态指示器
-                const statusIndicator = document.createElement('div');
-                statusIndicator.className = 'status-indicator';
+            const statusLight = document.createElement('div');
+            statusLight.className = `status-light ${result.status.includes('成功') ? 'success' : 'error'}`;
+            
+            const statusText = document.createElement('div');
+            statusText.className = 'status-text';
+            statusText.textContent = result.status;
+            
+            statusIndicator.appendChild(statusLight);
+            statusIndicator.appendChild(statusText);
+            container.appendChild(statusIndicator);
+
+            // 仿真参数部分
+            if (result.setup) {
+                const setupItem = document.createElement('div');
+                setupItem.className = 'result-item info';
                 
-                const statusLight = document.createElement('div');
-                statusLight.className = `status-light ${result.status === '仿真成功' ? 'success' : 'error'}`;
-                
-                const statusText = document.createElement('div');
-                statusText.className = 'status-text';
-                statusText.textContent = result.status;
-                
-                statusIndicator.appendChild(statusLight);
-                statusIndicator.appendChild(statusText);
-                container.appendChild(statusIndicator);
-                
-                // 如果有设置信息，显示设置信息
-                if (result.setup) {
-                    const setupItem = document.createElement('div');
-                    setupItem.className = 'result-item info';
+                const setupTitle = document.createElement('div');
+                setupTitle.className = 'result-section-title';
+                setupTitle.textContent = '仿真参数';
+                setupItem.appendChild(setupTitle);
+
+                const paramsContainer = document.createElement('div');
+                paramsContainer.className = 'result-parameters';
+
+                Object.entries(result.setup).forEach(([key, value]) => {
+                    const paramItem = document.createElement('div');
+                    paramItem.className = 'parameter-item';
                     
-                    const setupTitle = document.createElement('div');
-                    setupTitle.className = 'result-section-title';
-                    setupTitle.textContent = '仿真设置';
+                    const label = document.createElement('div');
+                    label.className = 'parameter-label';
+                    label.textContent = key;
                     
-                    const paramsContainer = document.createElement('div');
-                    paramsContainer.className = 'result-parameters';
+                    const val = document.createElement('div');
+                    val.className = 'parameter-value';
+                    val.textContent = value;
                     
-                    Object.entries(result.setup).forEach(([key, value]) => {
-                        const paramItem = document.createElement('div');
-                        paramItem.className = 'parameter-item';
-                        
-                        const label = document.createElement('div');
-                        label.className = 'parameter-label';
-                        label.textContent = key;
-                        
-                        const val = document.createElement('div');
-                        val.className = 'parameter-value';
-                        val.textContent = value;
-                        
-                        paramItem.appendChild(label);
-                        paramItem.appendChild(val);
-                        paramsContainer.appendChild(paramItem);
-                    });
-                    
-                    setupItem.appendChild(setupTitle);
-                    setupItem.appendChild(paramsContainer);
-                    container.appendChild(setupItem);
-                }
-                
-                // 如果有详细信息，解析并显示
-                if (result.info) {
-                    const recordMatch = result.info.match(/record SimulationResult([\s\S]*?)end SimulationResult;/);
-                    if (recordMatch) {
-                        const recordContent = recordMatch[1];
-                        const resultItem = document.createElement('div');
-                        resultItem.className = 'result-item info';
-                        
-                        const resultTitle = document.createElement('div');
-                        resultTitle.className = 'result-section-title';
-                        resultTitle.textContent = '仿真结果详情';
-                        resultItem.appendChild(resultTitle);
-                        
-                        // 解析并显示仿真参数
-                        const params = {};
-                        recordContent.split(',\n').forEach(line => {
-                            const [key, value] = line.split('=').map(s => s.trim());
-                            if (key && value) {
-                                params[key] = value.replace(/['"]/g, '');
-                            }
-                        });
-                        
-                        // 创建参数显示区域
-                        const paramsContainer = document.createElement('div');
-                        paramsContainer.className = 'result-parameters';
-                        
-                        Object.entries(params).forEach(([key, value]) => {
-                            const paramItem = document.createElement('div');
-                            paramItem.className = 'parameter-item';
-                            
-                            const label = document.createElement('div');
-                            label.className = 'parameter-label';
-                            label.textContent = key;
-                            
-                            const val = document.createElement('div');
-                            val.className = 'parameter-value';
-                            val.textContent = value;
-                            
-                            paramItem.appendChild(label);
-                            paramItem.appendChild(val);
-                            paramsContainer.appendChild(paramItem);
-                        });
-                        
-                        resultItem.appendChild(paramsContainer);
-                        container.appendChild(resultItem);
-                    }
-                    
-                    // 解析错误信息
-                    const errorMatch = result.info.match(/Error: (.*?)(?=\n|$)/);
-                    if (errorMatch) {
-                        const errorItem = document.createElement('div');
-                        errorItem.className = 'result-item error';
-                        
-                        const statusDiv = document.createElement('div');
-                        statusDiv.className = 'result-status error';
-                        statusDiv.textContent = '错误信息';
-                        
-                        const errorDetails = document.createElement('div');
-                        errorDetails.className = 'result-details';
-                        errorDetails.textContent = errorMatch[1];
-                        
-                        errorItem.appendChild(statusDiv);
-                        errorItem.appendChild(errorDetails);
-                        container.appendChild(errorItem);
-                    }
-                }
-            } else {
-                // 保留原有的字符串格式处理逻辑
-                return formatSimulationResultString(result);
+                    paramItem.appendChild(label);
+                    paramItem.appendChild(val);
+                    paramsContainer.appendChild(paramItem);
+                });
+
+                setupItem.appendChild(paramsContainer);
+                container.appendChild(setupItem);
             }
-            
+
+            // 详细信息部分
+            if (result.info) {
+                const infoItem = document.createElement('div');
+                infoItem.className = 'result-item info';
+                
+                const infoTitle = document.createElement('div');
+                infoTitle.className = 'result-section-title';
+                infoTitle.textContent = '详细信息';
+                infoItem.appendChild(infoTitle);
+
+                const infoContent = document.createElement('div');
+                infoContent.className = 'result-details';
+                infoContent.textContent = result.info;
+                infoItem.appendChild(infoContent);
+
+                container.appendChild(infoItem);
+            }
+
             return container;
         }
 
-        // 将原有的字符串格式处理逻辑移到新函数中
-        function formatSimulationResultString(result) {
-            // ... 原有的字符串处理逻辑 ...
-        }
-
         function updateSimulationResult(result) {
+            // 确保 result 是对象而不是字符串
+            let data = (typeof result === 'string') ? JSON.parse(result) : result;
+            
+            // 更新仿真状态显示
             const resultContainer = document.getElementById('simulationResult');
-            resultContainer.innerHTML = '';
-            resultContainer.appendChild(formatSimulationResult(result));
+            
+            // 首先解析JSON字符串
+            const jsonData = JSON.parse(data);
+            
+            // 创建可折叠的JSON显示函数
+            function createCollapsibleJSON(obj, level = 0) {
+                const indent = '  '.repeat(level);
+                let html = '';
+                
+                if (Array.isArray(obj)) {
+                    if (obj.length === 0) return '<span style="color: #d4d4d4;">[]</span>';
+                    html += `<span style="color: #d4d4d4;">[</span><span class="collapse-toggle" style="cursor: pointer; color: #569cd6;"> ... </span><br>`;
+                    html += `<div class="collapsible" style="display: none;">`;
+                    obj.forEach((item, index) => {
+                        html += `${indent}  ${createCollapsibleJSON(item, level + 1)}${index < obj.length - 1 ? ',' : ''}<br>`;
+                    });
+                    html += `${indent}<span style="color: #d4d4d4;">]</span>`;
+                    html += '</div>';
+                } else if (typeof obj === 'object' && obj !== null) {
+                    const keys = Object.keys(obj);
+                    if (keys.length === 0) return '<span style="color: #d4d4d4;">{}</span>';
+                    html += `<span style="color: #d4d4d4;">{</span><span class="collapse-toggle" style="cursor: pointer; color: #569cd6;"> ... </span><br>`;
+                    html += `<div class="collapsible" style="display: none;">`;
+                    keys.forEach((key, index) => {
+                        html += `${indent}  <span style="color: #9cdcfe;">"${key}"</span>: ${createCollapsibleJSON(obj[key], level + 1)}${index < keys.length - 1 ? ',' : ''}<br>`;
+                    });
+                    html += `${indent}<span style="color: #d4d4d4;">}</span>`;
+                    html += '</div>';
+                } else if (typeof obj === 'string') {
+                    html += `<span style="color: #ce9178;">"${obj.replace(/</g, '&lt;').replace(/>/g, '&gt;')}"</span>`;
+                } else {
+                    html += `<span style="color: #b5cea8;">${obj}</span>`;
+                }
+                
+                return html;
+            }
+            
+            resultContainer.innerHTML = `
+                <div class="status-info">
+                    <h3>仿真状态：${jsonData.status || '未知'}</h3>
+                    <div class="json-viewer" style="background: #1e1e1e; color: #d4d4d4; padding: 16px; border-radius: 4px; overflow: auto; max-height: 600px;">
+                        <pre style="margin: 0; white-space: pre-wrap; word-wrap: break-word;"><code>${createCollapsibleJSON(jsonData)}</code></pre>
+                    </div>
+                </div>
+            `;
+            
+            // 添加折叠/展开功能的事件监听
+            document.querySelectorAll('.collapse-toggle').forEach(toggle => {
+                toggle.addEventListener('click', function(e) {
+                    const collapsible = this.nextElementSibling.nextElementSibling;
+                    const isCollapsed = collapsible.style.display === 'none';
+                    collapsible.style.display = isCollapsed ? 'block' : 'none';
+                    this.textContent = isCollapsed ? ' - ' : ' ... ';
+                    e.stopPropagation();
+                });
+            });
+
+            // 如果有数据，则渲染图表
+            if (data.data) {
+                renderSimulationCharts(data);
+            }
         }
 
         function showSimulationRunning() {
@@ -1102,6 +1090,65 @@
             statusIndicator.appendChild(statusText);
             resultContainer.appendChild(statusIndicator);
         }
+
+        // 初始化图表
+        const heightChart = echarts.init(document.getElementById('heightChart'));
+        const velocityChart = echarts.init(document.getElementById('velocityChart'));
+
+        // 处理仿真数据
+        function renderSimulationCharts(data) {
+            const timeData = data.data.time;
+            const heightData = data.data.values.height;
+            const velocityData = data.data.values.velocity;
+            
+            // 高度图表配置
+            const heightOption = {
+                title: { text: '物体高度随时间变化' },
+                tooltip: { trigger: 'axis' },
+                xAxis: { 
+                    type: 'value',
+                    name: '时间 (s)'
+                },
+                yAxis: { 
+                    type: 'value',
+                    name: '高度 (m)'
+                },
+                series: [{
+                    data: timeData.map((t, i) => [t, heightData[i]]),
+                    type: 'line',
+                    name: '高度'
+                }]
+            };
+
+            // 速度图表配置
+            const velocityOption = {
+                title: { text: '物体速度随时间变化' },
+                tooltip: { trigger: 'axis' },
+                xAxis: { 
+                    type: 'value',
+                    name: '时间 (s)'
+                },
+                yAxis: { 
+                    type: 'value',
+                    name: '速度 (m/s)'
+                },
+                series: [{
+                    data: timeData.map((t, i) => [t, velocityData[i]]),
+                    type: 'line',
+                    name: '速度'
+                }]
+            };
+
+            // 渲染图表
+            heightChart.setOption(heightOption);
+            velocityChart.setOption(velocityOption);
+        }
+
+        // 监听窗口大小变化,调整图表大小
+        window.addEventListener('resize', function() {
+            heightChart.resize();
+            velocityChart.resize();
+        });
     </script>
 </body>
 </html> 

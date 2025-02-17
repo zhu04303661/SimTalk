@@ -1,0 +1,46 @@
+// 清除之前的模型
+clear();
+
+// 加载Modelica标准库
+loadModel(Modelica);
+getErrorString();
+
+// 切换到工作目录
+cd("{temp_dir}");
+getErrorString();
+
+// 加载模型文件
+success := loadFile("{model_file}");
+if not success then
+    print("Failed to load model file: " + getErrorString());
+    exit(1);
+end if;
+
+// 检查模型是否存在
+success := isModel({model_name});
+if not success then
+    print("Model {model_name} does not exist after loading!");
+    print(getErrorString());
+    exit(1);
+end if;
+
+// 列出已加载的模型
+print("Loaded models: ");
+print(getClassNames());
+getErrorString();
+
+// 执行仿真
+simulate({model_name}, 
+    startTime=0.0,
+    stopTime=10.0, 
+    numberOfIntervals=500,
+    tolerance=1e-6,
+    method="dassl",
+    fileNamePrefix="{model_name}",
+    outputFormat="csv",
+    variableFilter=".*"
+);
+
+// 获取仿真结果和错误信息
+print("Simulation result: ");
+print(getErrorString()); 

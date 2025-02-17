@@ -60,6 +60,15 @@ http://localhost:5000
 3. 查看生成的Modelica代码
 4. 查看仿真结果
 
+## 手动仿真方法
+
+1. 在文本框中输入您想要实现的仿真模型的自然语言描述
+2. 点击"生成代码"按钮
+3. 查看生成的Modelica代码
+4. 将生成的Modelica代码复制到test目录下的FallingMarble.mo文件中
+5. 在test目录下执行`omc FallingMarble_sim.mos`命令
+6. 查看仿真结果
+
 ## 注意事项
 
 - 确保已正确安装OpenModelica并将其添加到系统环境变量中

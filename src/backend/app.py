@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template, Response, stream_with_context
+from flask import Flask, request, jsonify, render_template, Response, stream_with_context, send_from_directory
 from dotenv import load_dotenv
 import os
 import tempfile
@@ -129,44 +129,177 @@ class OpenModelicaManager:
         try:
             # 创建临时目录
             temp_dir = tempfile.mkdtemp()
+            # 确保结果目录存在
+            results_dir = os.path.join(os.path.dirname(__file__), 'temp', 'results')
+            os.makedirs(results_dir, exist_ok=True)
+            
             model_file = os.path.join(temp_dir, f"{model_name}.mo")
             
             # 写入模型文件
             with open(model_file, 'w', encoding='utf-8') as f:
                 f.write(modelica_code)
             
-            # 编译和仿真命令
-            sim_file = os.path.join(temp_dir, f"{model_name}_sim.mos")
-            with open(sim_file, 'w', encoding='utf-8') as f:
-                f.write(f"""
-loadFile("{model_file}");
-simulate({model_name}, stopTime=10.0, numberOfIntervals=500);
-getErrorString();
-""")
-            
-            # 执行仿真
-            result = subprocess.run(['omc', sim_file], capture_output=True, text=True)
-            
-            if result.returncode == 0:
+            # 读取仿真脚本模板
+            template_path = os.path.join(os.path.dirname(__file__), 'simulation_template.mos')
+            try:
+                with open(template_path, 'r', encoding='utf-8') as f:
+                    template_content = f.read()
+            except FileNotFoundError:
+                logger.error(f"找不到仿真脚本模板文件: {template_path}")
                 return {
-                    'status': '仿真成功',
-                    'setup': {'stopTime': 10.0, 'numberOfIntervals': 500},
-                    'info': result.stdout
-                }
-            else:
-                return {
-                    'status': f'仿真失败: {result.stderr}',
-                    'setup': None,
+                    'status': '仿真失败',
+                    'error': '找不到仿真脚本模板文件',
                     'info': None
                 }
             
+            # 创建仿真脚本
+            sim_file = os.path.join(temp_dir, f"{model_name}_sim.mos")
+            with open(sim_file, 'w', encoding='utf-8') as f:
+                # 使用转义的路径分隔符
+                safe_temp_dir = temp_dir.replace('\\', '/')
+                safe_model_file = model_file.replace('\\', '/')
+                f.write(template_content.format(
+                    temp_dir=safe_temp_dir,
+                    model_file=safe_model_file,
+                    model_name=model_name
+                ))
+
+            # 执行仿真
+            result = subprocess.run(
+                ['omc', sim_file], 
+                capture_output=True, 
+                text=True,
+                cwd=temp_dir
+            )
+            
+            logger.info(f"仿真脚本输出:\n{result.stdout}")
+            if result.stderr:
+                logger.error(f"仿真脚本错误:\n{result.stderr}")
+            
+            # 检查仿真结果文件
+            result_file = os.path.join(temp_dir, f"{model_name}_res.csv")
+            
+            if os.path.exists(result_file):
+                # 将结果文件复制到持久化目录
+                persistent_result_file = os.path.join(results_dir, f"{model_name}_res.csv")
+                import shutil
+                shutil.copy2(result_file, persistent_result_file)
+                
+                try:
+                    import pandas as pd
+                    
+                    # 读取CSV结果文件
+                    df = pd.read_csv(result_file)
+                    
+                    # 获取变量列表
+                    variables = df.columns.tolist()
+                    
+                    # 解析仿真输出以获取详细信息
+                    simulation_info = {
+                        "raw_output": result.stdout,
+                        "error_output": result.stderr
+                    }
+                    
+                    # 从输出中提取关键信息
+                    if "Simulation execution failed" in result.stdout:
+                        status = "仿真失败"
+                        error_msg = result.stdout
+                    else:
+                        status = "仿真成功"
+                        error_msg = None
+                        
+                        # 尝试从输出中提取更多信息
+                        time_stats = {}
+                        for line in result.stdout.split('\n'):
+                            if 'CPU time for integration' in line:
+                                time_stats['integration_time'] = line.split(':')[1].strip()
+                            elif 'CPU time for simulation' in line:
+                                time_stats['total_time'] = line.split(':')[1].strip()
+                        
+                        if time_stats:
+                            simulation_info["performance"] = time_stats
+                    
+                    simulation_result = {
+                        "status": status,
+                        "setup": {
+                            "stopTime": 10.0,
+                            "numberOfIntervals": 500,
+                            "method": "dassl",
+                            "tolerance": 1e-6
+                        },
+                        "info": simulation_info,
+                        "error": error_msg,
+                        "variables": variables,
+                        "data": {
+                            "time": df['time'].tolist(),
+                            "values": {
+                                col: df[col].tolist() 
+                                for col in df.columns 
+                                if col != 'time'
+                            }
+                        }
+                    }
+                    
+                    # 如果有错误信息，添加到结果中
+                    if result.stderr:
+                        simulation_result["error_details"] = result.stderr
+                    
+                except Exception as e:
+                    logger.error(f"处理结果文件失败: {e}")
+                    simulation_result = {
+                        "status": "仿真成功但处理结果失败",
+                        "error": str(e),
+                        "info": {
+                            "raw_output": result.stdout,
+                            "error_output": result.stderr
+                        }
+                    }
+            else:
+                # 解析仿真失败的原因
+                error_analysis = self._analyze_simulation_error(result.stdout, result.stderr)
+                error_info = (
+                    f"仿真失败原因: {error_analysis}\n\n"
+                    f"详细输出:\n{result.stdout}\n"
+                    f"错误信息:\n{result.stderr}\n"
+                    f"模型文件内容:\n{modelica_code}\n"
+                )
+                simulation_result = {
+                    "status": "仿真失败",
+                    "error": error_analysis,
+                    "info": error_info
+                }
+            
+            return simulation_result
+            
         except Exception as e:
             logger.error(f"仿真过程出错: {e}")
-            return {'status': f'仿真失败: {str(e)}', 'setup': None, 'info': None}
+            return {
+                'status': f'仿真失败: {str(e)}',
+                'setup': None,
+                'info': None
+            }
         finally:
             if temp_dir and os.path.exists(temp_dir):
                 import shutil
                 shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def _analyze_simulation_error(self, stdout: str, stderr: str) -> str:
+        """分析仿真错误原因"""
+        if not stdout and not stderr:
+            return "未获取到仿真输出"
+        
+        error_patterns = [
+            (r"Error: (.*?)(?=\n|$)", "编译错误"),
+            (r"Failed to load model file: (.*?)(?=\n|$)", "模型加载失败"),
+            (r"Simulation Failed\. (.*?)(?=\n|$)", "仿真执行失败"),
+            (r"Error processing file: (.*?)(?=\n|$)", "文件处理错误")
+        ]
+        
+        for pattern, error_type in error_patterns:
+            if match := re.search(pattern, stdout + stderr):
+                return f"{error_type}: {match.group(1)}"
+            
+        return "未知错误，请查看详细输出"
 
     def get_health_status(self) -> Dict[str, Any]:
         """获取OpenModelica的健康状态"""
@@ -334,27 +467,28 @@ def simulate_modelica():
         if not modelica_code or not model_name:
             return jsonify({'error': '缺少必要参数'}), 400
 
-        def generate():
-            try:
-                yield "正在执行仿真...\n"
-                simulation_result = modelica_manager.simulate_model(modelica_code, model_name)
-                
-                yield f"simulation_result:{json.dumps(simulation_result)}\n"
-                
-                if simulation_result['status'] == '仿真成功':
-                    yield "仿真已完成！\n"
-                else:
-                    yield f"仿真失败: {simulation_result['status']}\n"
-                    
-            except Exception as e:
-                logger.error(f"仿真过程出错: {e}")
-                yield f"发生错误: {str(e)}\n"
+        # 验证模型名称格式
+        if not re.match(r'^[A-Za-z][A-Za-z0-9_]*$', model_name):
+            return jsonify({
+                'error': '无效的模型名称',
+                'info': '模型名称必须以字母开头，只能包含字母、数字和下划线'
+            }), 400
 
-        return Response(stream_with_context(generate()), mimetype='text/plain')
+        try:
+            simulation_result = modelica_manager.simulate_model(modelica_code, model_name)
+            return jsonify(simulation_result)
+                
+        except Exception as e:
+            logger.error(f"仿真过程出错: {e}")
+            return jsonify({'error': str(e)}), 500
         
     except Exception as e:
         logger.error(f"处理仿真请求时出错: {e}")
         return jsonify({'error': str(e)}), 500
+
+@app.route('/results/<path:filename>')
+def serve_result(filename):
+    return send_from_directory('temp/results', filename)
 
 if __name__ == '__main__':
     app.run(debug=True, use_reloader=False, port=5001) 
