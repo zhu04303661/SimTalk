@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, Response, stream_with_context
 from dotenv import load_dotenv
 import os
 import tempfile
@@ -98,130 +98,75 @@ class OpenModelicaManager:
         return None
 
     def _initialize_session(self) -> None:
-        """初始化OpenModelica会话，包含重试机制"""
+        """初始化OpenModelica会话"""
         if not self.is_available:
             return
-
-        max_retries = 3
-        retry_delay = 2  # 秒
-        
-        for attempt in range(max_retries):
-            try:
-                # 确保没有遗留的OMC进程
-                self._cleanup_omc_processes()
-                
-                # 导入并初始化会话
-                from OMPython import OMCSessionZMQ
-                self.omc = OMCSessionZMQ(timeout=30)  # 增加超时时间
-                
-                # 验证会话
-                version = self.omc.sendExpression('getVersion()')
-                logger.info(f"OpenModelica连接成功，版本：{version}")
+            
+        try:
+            # 验证omc命令是否可用
+            result = subprocess.run(['omc', '--version'], capture_output=True, text=True)
+            if result.returncode == 0:
+                logger.info(f"OpenModelica连接成功，版本：{result.stdout.strip()}")
+                self.omc = 'available'  # 标记为可用
                 return
                 
-            except Exception as e:
-                logger.warning(f"OpenModelica会话初始化尝试 {attempt + 1}/{max_retries} 失败: {e}")
-                if attempt < max_retries - 1:
-                    import time
-                    time.sleep(retry_delay)
-                    continue
-                
-                logger.error(f"OpenModelica初始化失败，已达到最大重试次数: {e}")
-                self.is_available = False
-                self.status_message = f"OpenModelica初始化失败: {str(e)}"
-                self.omc = None
-
-    def _cleanup_omc_processes(self) -> None:
-        """清理可能存在的OMC进程"""
-        try:
-            if sys.platform == 'darwin':  # macOS
-                subprocess.run(['pkill', '-f', 'omc'], capture_output=True)
-            elif sys.platform == 'linux':
-                subprocess.run(['pkill', 'omc'], capture_output=True)
-            elif sys.platform == 'win32':
-                subprocess.run(['taskkill', '/F', '/IM', 'omc.exe'], capture_output=True)
         except Exception as e:
-            logger.warning(f"清理OMC进程时出错: {e}")
+            logger.error(f"OpenModelica初始化失败: {e}")
+            self.is_available = False
+            self.status_message = f"OpenModelica初始化失败: {str(e)}"
+            self.omc = None
 
     def simulate_model(self, modelica_code: str, model_name: str) -> Dict[str, Any]:
         """执行Modelica模型仿真"""
-        if not self.is_available or not self.omc:
+        if not self.is_available:
             return {
                 'status': 'OpenModelica未安装，仿真功能不可用',
                 'setup': None,
                 'info': None
             }
 
-        temp_file = None
+        temp_dir = None
         try:
-            # 创建临时文件
-            temp_file = self._create_temp_file(modelica_code)
+            # 创建临时目录
+            temp_dir = tempfile.mkdtemp()
+            model_file = os.path.join(temp_dir, f"{model_name}.mo")
             
-            # 加载并编译模型
-            if not self._load_model(temp_file):
-                return {'status': '模型加载失败', 'setup': None, 'info': None}
+            # 写入模型文件
+            with open(model_file, 'w', encoding='utf-8') as f:
+                f.write(modelica_code)
             
-            # 设置并执行仿真
-            sim_setup = self._configure_simulation(model_name)
-            sim_result = self._run_simulation(model_name)
+            # 编译和仿真命令
+            sim_file = os.path.join(temp_dir, f"{model_name}_sim.mos")
+            with open(sim_file, 'w', encoding='utf-8') as f:
+                f.write(f"""
+loadFile("{model_file}");
+simulate({model_name}, stopTime=10.0, numberOfIntervals=500);
+getErrorString();
+""")
             
-            if not sim_result:
-                return {'status': '仿真失败', 'setup': None, 'info': None}
+            # 执行仿真
+            result = subprocess.run(['omc', sim_file], capture_output=True, text=True)
             
-            return {
-                'status': '仿真成功',
-                'setup': sim_setup,
-                'info': sim_result
-            }
+            if result.returncode == 0:
+                return {
+                    'status': '仿真成功',
+                    'setup': {'stopTime': 10.0, 'numberOfIntervals': 500},
+                    'info': result.stdout
+                }
+            else:
+                return {
+                    'status': f'仿真失败: {result.stderr}',
+                    'setup': None,
+                    'info': None
+                }
             
         except Exception as e:
             logger.error(f"仿真过程出错: {e}")
             return {'status': f'仿真失败: {str(e)}', 'setup': None, 'info': None}
         finally:
-            self._cleanup_temp_files(temp_file)
-
-    def _create_temp_file(self, modelica_code: str) -> str:
-        """创建临时Modelica文件"""
-        with tempfile.NamedTemporaryFile(suffix='.mo', delete=False, mode='w', encoding='utf-8') as f:
-            f.write(modelica_code)
-            return f.name
-
-    def _load_model(self, file_path: str) -> bool:
-        """加载Modelica模型文件"""
-        load_result = self.omc.sendExpression(f'loadFile("{file_path}")')
-        if not load_result:
-            logger.error(f"模型加载失败: {self.omc.sendExpression('getErrorString()')}")
-            return False
-        return True
-
-    def _configure_simulation(self, model_name: str) -> Dict[str, Any]:
-        """配置仿真参数"""
-        sim_setup = {
-            'startTime': 0.0,
-            'stopTime': 10.0,
-            'numberOfIntervals': 500,
-            'tolerance': 1e-6,
-            'method': 'dassl'
-        }
-        
-        self.omc.sendExpression(f'setCommandLineOptions("-d=initialization,solver")')
-        for key, value in sim_setup.items():
-            self.omc.sendExpression(f'setSimulationOption("{key}", {value})')
-            
-        return sim_setup
-
-    def _run_simulation(self, model_name: str) -> Optional[Dict[str, Any]]:
-        """执行仿真"""
-        sim_result = self.omc.sendExpression(f'simulate({model_name})')
-        if not sim_result or 'timeTotal' not in sim_result:
-            logger.error(f"仿真失败: {self.omc.sendExpression('getErrorString()')}")
-            return None
-        return sim_result
-
-    def _cleanup_temp_files(self, temp_file: Optional[str]) -> None:
-        """清理临时文件"""
-        if temp_file and os.path.exists(temp_file):
-            os.unlink(temp_file)
+            if temp_dir and os.path.exists(temp_dir):
+                import shutil
+                shutil.rmtree(temp_dir, ignore_errors=True)
 
     def get_health_status(self) -> Dict[str, Any]:
         """获取OpenModelica的健康状态"""
@@ -230,7 +175,6 @@ class OpenModelicaManager:
             'status_message': self.status_message,
             'installation_path': os.environ.get('OPENMODELICAHOME', '未设置'),
             'version': None,
-            'session_active': False,
             'details': {}
         }
 
@@ -240,16 +184,6 @@ class OpenModelicaManager:
                 version_result = subprocess.run(['omc', '--version'], capture_output=True, text=True)
                 if version_result.returncode == 0:
                     status['version'] = version_result.stdout.strip()
-                
-                # 检查会话状态
-                if self.omc:
-                    try:
-                        # 尝试执行一个简单的命令来验证会话
-                        self.omc.sendExpression('getVersion()')
-                        status['session_active'] = True
-                        status['details']['session_type'] = 'OMCSessionZMQ'
-                    except Exception as e:
-                        status['details']['session_error'] = str(e)
                 
                 # 检查关键目录
                 bin_path = os.path.join(os.environ.get('OPENMODELICAHOME', ''), 'bin')
@@ -341,23 +275,39 @@ def index():
 def generate_modelica():
     """处理代码生成请求"""
     try:
-        # 获取并验证输入
         data = request.json
         prompt = data.get('prompt')
         if not prompt:
             return jsonify({'error': '请提供模型描述'}), 400
 
-        # 生成代码
-        modelica_code, model_name = code_generator.generate_code(prompt)
-        
-        # 执行仿真
-        simulation_result = modelica_manager.simulate_model(modelica_code, model_name)
-        
-        return jsonify({
-            'modelica_code': modelica_code,
-            'model_name': model_name,
-            'simulation_result': simulation_result
-        })
+        def generate():
+            try:
+                # 生成代码
+                modelica_code, model_name = code_generator.generate_code(prompt)
+                
+                # 发送生成的代码
+                yield f"正在生成 Modelica 模型...\n"
+                yield f"```modelica:{model_name}.mo\n"
+                yield modelica_code
+                yield "```\n"
+                
+                # 执行仿真
+                yield "正在执行仿真...\n"
+                simulation_result = modelica_manager.simulate_model(modelica_code, model_name)
+                
+                # 发送仿真结果
+                yield f"simulation_result:{json.dumps(simulation_result)}\n"
+                
+                if simulation_result['status'] == '仿真成功':
+                    yield "仿真已完成！\n"
+                else:
+                    yield f"仿真失败: {simulation_result['status']}\n"
+                    
+            except Exception as e:
+                logger.error(f"处理请求时出错: {e}")
+                yield f"发生错误: {str(e)}\n"
+
+        return Response(stream_with_context(generate()), mimetype='text/plain')
         
     except Exception as e:
         logger.error(f"处理请求时出错: {e}")
@@ -371,6 +321,39 @@ def check_health():
         return jsonify(health_status)
     except Exception as e:
         logger.error(f"健康检查API出错: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/simulate', methods=['POST'])
+def simulate_modelica():
+    """处理仿真请求"""
+    try:
+        data = request.json
+        modelica_code = data.get('modelica_code')
+        model_name = data.get('model_name')
+        
+        if not modelica_code or not model_name:
+            return jsonify({'error': '缺少必要参数'}), 400
+
+        def generate():
+            try:
+                yield "正在执行仿真...\n"
+                simulation_result = modelica_manager.simulate_model(modelica_code, model_name)
+                
+                yield f"simulation_result:{json.dumps(simulation_result)}\n"
+                
+                if simulation_result['status'] == '仿真成功':
+                    yield "仿真已完成！\n"
+                else:
+                    yield f"仿真失败: {simulation_result['status']}\n"
+                    
+            except Exception as e:
+                logger.error(f"仿真过程出错: {e}")
+                yield f"发生错误: {str(e)}\n"
+
+        return Response(stream_with_context(generate()), mimetype='text/plain')
+        
+    except Exception as e:
+        logger.error(f"处理仿真请求时出错: {e}")
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':

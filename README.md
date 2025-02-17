@@ -21,7 +21,7 @@
 1. 克隆仓库：
 ```bash
 git clone <repository-url>
-cd myproject
+cd SimTalk
 ```
 
 2. 安装依赖：
