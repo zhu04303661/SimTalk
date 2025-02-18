@@ -1,14 +1,25 @@
+import sys
+from pathlib import Path
+
+# 添加项目根目录到Python路径
+project_root = str(Path(__file__).parent.parent)
+if project_root not in sys.path:
+    sys.path.append(project_root)
+
 from flask import Flask, request, jsonify, render_template, Response, stream_with_context, send_from_directory
 from dotenv import load_dotenv
 import os
 import tempfile
-import sys
 import subprocess
 import json
 import re
 import logging
 from typing import Dict, Tuple, Optional, Any
 from openai import AzureOpenAI
+from backend.modelica.manager import OpenModelicaManager
+from backend.modelica.generator import ModelicaCodeGenerator
+from backend.config.settings import Settings
+from backend.utils.logger import setup_logger
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -341,14 +352,13 @@ class OpenModelicaManager:
 class ModelicaCodeGenerator:
     """Modelica代码生成器类"""
     
-    def __init__(self):
-        load_dotenv()
+    def __init__(self, api_key: str, endpoint: str, deployment_name: str):
         self.client = AzureOpenAI(
-            api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+            api_key=api_key,
             api_version="2023-05-15",
-            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT")
+            azure_endpoint=endpoint
         )
-        self.deployment_name = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
+        self.deployment_name = deployment_name
 
     def generate_code(self, prompt: str) -> Tuple[str, str]:
         """生成Modelica代码"""
@@ -393,11 +403,17 @@ class ModelicaCodeGenerator:
         return model_match.group(1)
 
 # 创建Flask应用
-app = Flask(__name__, template_folder='../../templates')
+app = Flask(__name__, 
+            template_folder='../../templates',
+            static_folder='../static')
 
 # 初始化管理器
 modelica_manager = OpenModelicaManager()
-code_generator = ModelicaCodeGenerator()
+code_generator = ModelicaCodeGenerator(
+    api_key=Settings.AZURE_OPENAI_API_KEY,
+    endpoint=Settings.AZURE_OPENAI_ENDPOINT,
+    deployment_name=Settings.AZURE_OPENAI_DEPLOYMENT_NAME
+)
 
 @app.route('/')
 def index():
