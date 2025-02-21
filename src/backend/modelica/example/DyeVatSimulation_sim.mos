@@ -1,0 +1,64 @@
+// DyeVatSimulation_sim.mos
+// 该脚本用于加载、编译和仿真 DyeVatSimulation 模型
+
+// 清除之前的模型
+clear();
+
+// 1. 加载必要的 Modelica 库
+loadModel(Modelica); // 加载 Modelica 标准库，版本 4.0.0
+loadModel(Modelica.Thermal.HeatTransfer); // 加载热传递库
+loadModel(Modelica.Blocks); // 加载 Blocks 库
+
+// 2. 加载 DyeVatSimulation 模型
+//loadFile("DyeVatSimulation.mo"); // 加载模型文件，确保路径正确
+// 加载模型文件
+success := loadFile("DyeVatSimulation.mo");
+if not success then
+    print("Failed to load model file: " + getErrorString());
+    exit(1);
+end if;
+
+// 3. 检查模型是否加载成功
+if not isModel(DyeVatSimulation) then
+  print("Error: Failed to load DyeVatSimulation model.");
+  exit(1);
+end if;
+
+// 列出已加载的模型
+print("Loaded models: ");
+print(getClassNames());
+getErrorString();
+
+// 4. 设置仿真参数
+// setCommandLineOptions("--std=3.3"); // 设置 Modelica 标准版本
+// setCommandLineOptions("--initialization"); // 启用初始化选项
+
+// 5. 编译模型
+translateModel(DyeVatSimulation); // 编译模型
+
+// 6. 设置仿真选项
+simulate(
+  DyeVatSimulation, // 模型名称
+  startTime=0, // 仿真开始时间
+  stopTime=600, // 仿真结束时间（600 秒）
+  numberOfIntervals=500, // 仿真点数
+  tolerance=1e-6, // 容差
+  method="dassl", // 使用 DASSL 求解器
+  fileNamePrefix="DyeVatSimulation", // 输出文件前缀
+  outputFormat="csv", // 输出格式为 CSV
+  variableFilter=".*" // 输出所有变量
+);
+
+// 获取仿真结果和错误信息
+print("Simulation result: ");
+print(getErrorString()); 
+
+
+// // 7. 检查仿真结果
+// if not readSimulationResult("DyeVatSimulation_res.csv", {time, "vat.T", "heater.Q_flow", "stirSpeed.y"}) then
+//   print("Error: Failed to read simulation results.");
+//   exit(1);
+// end if;
+
+// // 8. 打印仿真成功信息
+// print("Simulation completed successfully. Results saved to DyeVatSimulation_res.csv.");

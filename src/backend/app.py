@@ -13,6 +13,7 @@ import tempfile
 import subprocess
 import json
 import re
+import time  # Add time module import
 import logging
 from typing import Dict, Tuple, Optional, Any
 from openai import AzureOpenAI
@@ -20,7 +21,8 @@ from backend.modelica.manager import OpenModelicaManager
 from backend.modelica.generator import ModelicaCodeGenerator
 from backend.config.settings import Settings
 from backend.utils.logger import setup_logger
-
+from backend.prompts.modelica_prompts import  ModelicaPrompts
+import ipdb
 # 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -136,17 +138,22 @@ class OpenModelicaManager:
                 'info': None
             }
 
-        temp_dir = None
         try:
-            # 创建临时目录
-            temp_dir = tempfile.mkdtemp()
-            # 确保结果目录存在
-            results_dir = os.path.join(os.path.dirname(__file__), 'temp', 'results')
+            # 创建基础temp目录
+            base_temp_dir = os.path.join(os.path.dirname(__file__), 'temp')
+            os.makedirs(base_temp_dir, exist_ok=True)
+            
+            # 创建results目录
+            results_dir = os.path.join(base_temp_dir, 'results')
             os.makedirs(results_dir, exist_ok=True)
             
-            model_file = os.path.join(temp_dir, f"{model_name}.mo")
+            # 为当前任务创建唯一的目录名
+            task_id = f"task_{model_name}_{int(time.time())}"
+            task_dir = os.path.join(base_temp_dir, task_id)
+            os.makedirs(task_dir, exist_ok=True)
             
-            # 写入模型文件
+            # 在任务目录中创建模型文件
+            model_file = os.path.join(task_dir, f"{model_name}.mo")
             with open(model_file, 'w', encoding='utf-8') as f:
                 f.write(modelica_code)
             
@@ -163,14 +170,14 @@ class OpenModelicaManager:
                     'info': None
                 }
             
-            # 创建仿真脚本
-            sim_file = os.path.join(temp_dir, f"{model_name}_sim.mos")
+            # 在任务目录中创建仿真脚本
+            sim_file = os.path.join(task_dir, f"{model_name}_sim.mos")
             with open(sim_file, 'w', encoding='utf-8') as f:
                 # 使用转义的路径分隔符
-                safe_temp_dir = temp_dir.replace('\\', '/')
+                safe_task_dir = task_dir.replace('\\', '/')
                 safe_model_file = model_file.replace('\\', '/')
                 f.write(template_content.format(
-                    temp_dir=safe_temp_dir,
+                    temp_dir=safe_task_dir,
                     model_file=safe_model_file,
                     model_name=model_name
                 ))
@@ -180,7 +187,7 @@ class OpenModelicaManager:
                 ['omc', sim_file], 
                 capture_output=True, 
                 text=True,
-                cwd=temp_dir
+                cwd=task_dir
             )
             
             logger.info(f"仿真脚本输出:\n{result.stdout}")
@@ -188,7 +195,7 @@ class OpenModelicaManager:
                 logger.error(f"仿真脚本错误:\n{result.stderr}")
             
             # 检查仿真结果文件
-            result_file = os.path.join(temp_dir, f"{model_name}_res.csv")
+            result_file = os.path.join(task_dir, f"{model_name}_res.csv")  # Change temp_dir to task_dir
             
             if os.path.exists(result_file):
                 # 将结果文件复制到持久化目录
@@ -290,9 +297,8 @@ class OpenModelicaManager:
                 'info': None
             }
         finally:
-            if temp_dir and os.path.exists(temp_dir):
-                import shutil
-                shutil.rmtree(temp_dir, ignore_errors=True)
+            # Remove the cleanup code since we want to keep the task directory
+            pass
 
     def _analyze_simulation_error(self, stdout: str, stderr: str) -> str:
         """分析仿真错误原因"""
@@ -358,15 +364,33 @@ class ModelicaCodeGenerator:
             api_version="2023-05-15",
             azure_endpoint=endpoint
         )
+        self.modelica_prompts = ModelicaPrompts()
+
         self.deployment_name = deployment_name
+       
+        #self.system_prompt = self.modelica_prompts.get_system_prompt()
+        #self.modelica_examples = self.modelica_prompts.get_modelica_examples()
+
+    def _get_system_prompt(self) -> str:
+        """获取系统提示词"""
+        return self.system_prompt.format(example=self.modelica_examples)
 
     def generate_code(self, prompt: str) -> Tuple[str, str]:
         """生成Modelica代码"""
         try:
-            response = self._call_azure_openai(prompt)
-            modelica_code = response.choices[0].message.content
-            model_name = self._extract_model_name(modelica_code)
-            return modelica_code, model_name
+            # 首先检查是否有匹配的示例代码
+            # 创建全局实例
+            #example_code = self.modelica_prompts.find_matching_example(prompt)
+            example_code = ''
+            if example_code and example_code != (''):
+                model_name = self._extract_model_name(example_code)
+                return example_code, model_name
+            else:
+                # 使用GPT生成代码
+                response = self._call_azure_openai(prompt)
+                modelica_code = response.choices[0].message.content
+                model_name = self._extract_model_name(modelica_code)
+                return modelica_code, model_name
         except Exception as e:
             logger.error(f"代码生成失败: {e}")
             raise
@@ -425,35 +449,39 @@ def generate_modelica():
     """处理代码生成请求"""
     try:
         data = request.json
+        print("Received data:", data)  # 调试日志
         prompt = data.get('prompt')
+        
         if not prompt:
             return jsonify({'error': '请提供模型描述'}), 400
-
+        #ipdb.set_trace()
         def generate():
             try:
+                yield "正在生成 Modelica 模型...\n"
+                #ipdb.set_trace()
+
                 # 生成代码
                 modelica_code, model_name = code_generator.generate_code(prompt)
                 
                 # 发送生成的代码
-                yield f"正在生成 Modelica 模型...\n"
                 yield f"```modelica:{model_name}.mo\n"
                 yield modelica_code
                 yield "```\n"
                 
                 # 执行仿真
-                yield "正在执行仿真...\n"
-                simulation_result = modelica_manager.simulate_model(modelica_code, model_name)
+                # yield "正在执行仿真...\n"
+                # simulation_result = modelica_manager.simulate_model(modelica_code, model_name)
                 
-                # 发送仿真结果
-                yield f"simulation_result:{json.dumps(simulation_result)}\n"
+                # # 发送仿真结果
+                # yield f"simulation_result:{json.dumps(simulation_result, ensure_ascii=False)}\n"
                 
-                if simulation_result['status'] == '仿真成功':
-                    yield "仿真已完成！\n"
-                else:
-                    yield f"仿真失败: {simulation_result['status']}\n"
+                # if simulation_result['status'] == '仿真成功':
+                #     yield "仿真已完成！\n"
+                # else:
+                #     yield f"仿真失败: {simulation_result['status']}\n"
                     
             except Exception as e:
-                logger.error(f"处理请求时出错: {e}")
+                logger.error(f"代码生成失败: {e}")
                 yield f"发生错误: {str(e)}\n"
 
         return Response(stream_with_context(generate()), mimetype='text/plain')
@@ -483,15 +511,10 @@ def simulate_modelica():
         if not modelica_code or not model_name:
             return jsonify({'error': '缺少必要参数'}), 400
 
-        # 验证模型名称格式
-        if not re.match(r'^[A-Za-z][A-Za-z0-9_]*$', model_name):
-            return jsonify({
-                'error': '无效的模型名称',
-                'info': '模型名称必须以字母开头，只能包含字母、数字和下划线'
-            }), 400
-
         try:
+            print("===========开始仿真===========")
             simulation_result = modelica_manager.simulate_model(modelica_code, model_name)
+            print("===========仿真结束===========")
             return jsonify(simulation_result)
                 
         except Exception as e:
@@ -507,4 +530,4 @@ def serve_result(filename):
     return send_from_directory('temp/results', filename)
 
 if __name__ == '__main__':
-    app.run(debug=True, use_reloader=False, port=5001) 
+    app.run(debug=True, use_reloader=False, port=5001)
