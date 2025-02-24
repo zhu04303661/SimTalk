@@ -4,6 +4,8 @@
 
 <img width="1415" alt="page" src="https://github.com/user-attachments/assets/e227e1dd-02ee-47ab-84b7-0fdac57602b1" />
 
+## 系统架构
+![截屏2025-02-24 13 49 39](https://github.com/user-attachments/assets/61eabd34-357d-4e63-b24b-c1f37b56930d)
 
 
 ## 功能特点
